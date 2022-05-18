@@ -65,22 +65,6 @@ sample code bearing this copyright.
 #undef OW_DEBUG
 
 
-// bus reset: duration of low phase [us]
-#define OW_DURATION_RESET 480
-// overall slot duration
-#define OW_DURATION_SLOT 70
-// write 1 slot and read slot durations [us]
-#define OW_DURATION_1_LOW    6
-#define OW_DURATION_1_HIGH (OW_DURATION_SLOT - OW_DURATION_1_LOW)
-// write 0 slot durations [us]
-#define OW_DURATION_0_LOW   60
-#define OW_DURATION_0_HIGH (OW_DURATION_SLOT - OW_DURATION_0_LOW)
-// sample time for read slot
-#define OW_DURATION_SAMPLE  (15-2)
-// RX idle threshold
-// needs to be larger than any duration occurring during write slots
-#define OW_DURATION_RX_IDLE (OW_DURATION_SLOT + 2)
-
 // maximum number of bits that can be read or written per slot
 #define MAX_BITS_PER_SLOT (8)
 
@@ -111,14 +95,14 @@ static owb_status _reset(const OneWireBus * bus, bool * is_present)
 
     owb_rmt_driver_info * i = info_of_driver(bus);
 
-    tx_items[0].duration0 = OW_DURATION_RESET;
+    tx_items[0].duration0 = i->timing.durationReset;
     tx_items[0].level0 = 0;
     tx_items[0].duration1 = 0;
     tx_items[0].level1 = 1;
 
     uint16_t old_rx_thresh = 0;
     rmt_get_rx_idle_thresh(i->rx_channel, &old_rx_thresh);
-    rmt_set_rx_idle_thresh(i->rx_channel, OW_DURATION_RESET + 60);
+    rmt_set_rx_idle_thresh(i->rx_channel, i->timing.durationReset + 60);
 
     onewire_flush_rmt_rx_buf(bus);
     rmt_rx_start(i->rx_channel, true);
@@ -142,7 +126,7 @@ static owb_status _reset(const OneWireBus * bus, bool * is_present)
 #endif
 
                 // parse signal and search for presence pulse
-                if ((rx_items[0].level0 == 0) && (rx_items[0].duration0 >= OW_DURATION_RESET - 2))
+                if ((rx_items[0].level0 == 0) && (rx_items[0].duration0 >= i->timing.durationReset - 2))
                 {
                     if ((rx_items[0].level1 == 1) && (rx_items[0].duration1 > 0))
                     {
@@ -159,7 +143,7 @@ static owb_status _reset(const OneWireBus * bus, bool * is_present)
         else
         {
             // time out occurred, this indicates an unconnected / misconfigured bus
-            ESP_LOGE(TAG, "rx_items == 0");
+            //ESP_LOGE(TAG, "rx_items == 0");
             res = OWB_STATUS_HW_ERROR;
         }
     }
@@ -180,8 +164,10 @@ static owb_status _reset(const OneWireBus * bus, bool * is_present)
     return res;
 }
 
-static rmt_item32_t _encode_write_slot(uint8_t val)
+static rmt_item32_t _encode_write_slot(const OneWireBus* bus, uint8_t val)
 {
+    owb_rmt_driver_info * i = info_of_driver(bus);
+
     rmt_item32_t item = {0};
 
     item.level0 = 0;
@@ -189,14 +175,14 @@ static rmt_item32_t _encode_write_slot(uint8_t val)
     if (val)
     {
         // write "1" slot
-        item.duration0 = OW_DURATION_1_LOW;
-        item.duration1 = OW_DURATION_1_HIGH;
+        item.duration0 = i->timing.durationW1Low;
+        item.duration1 = i->timing.durationW1High;
     }
     else
     {
         // write "0" slot
-        item.duration0 = OW_DURATION_0_LOW;
-        item.duration1 = OW_DURATION_0_HIGH;
+        item.duration0 = i->timing.durationW0Low;
+        item.duration1 = i->timing.durationW0High;
     }
 
     return item;
@@ -216,7 +202,7 @@ static owb_status _write_bits(const OneWireBus * bus, uint8_t out, int number_of
     // write requested bits as pattern to TX buffer
     for (int i = 0; i < number_of_bits_to_write; i++)
     {
-        tx_items[i] = _encode_write_slot(out & 0x01);
+        tx_items[i] = _encode_write_slot(bus, out & 0x01);
         out >>= 1;
     }
 
@@ -239,15 +225,17 @@ static owb_status _write_bits(const OneWireBus * bus, uint8_t out, int number_of
     return status;
 }
 
-static rmt_item32_t _encode_read_slot(void)
+static rmt_item32_t _encode_read_slot(const OneWireBus* bus)
 {
+    owb_rmt_driver_info * i = info_of_driver(bus);
+
     rmt_item32_t item = {0};
 
     // construct pattern for a single read time slot
     item.level0    = 0;
-    item.duration0 = OW_DURATION_1_LOW;   // shortly force 0
+    item.duration0 = i->timing.durationW1Low;   // shortly force 0
     item.level1    = 1;
-    item.duration1 = OW_DURATION_1_HIGH;  // release high and finish slot
+    item.duration1 = i->timing.durationW1High;  // release high and finish slot
     return item;
 }
 
@@ -269,7 +257,7 @@ static owb_status _read_bits(const OneWireBus * bus, uint8_t *in, int number_of_
     // generate requested read slots
     for (int i = 0; i < number_of_bits_to_read; i++)
     {
-        tx_items[i] = _encode_read_slot();
+        tx_items[i] = _encode_read_slot(bus);
     }
 
     // end marker
@@ -301,7 +289,7 @@ static owb_status _read_bits(const OneWireBus * bus, uint8_t *in, int number_of_
                     // parse signal and identify logical bit
                     if (rx_items[i].level1 == 1)
                     {
-                        if ((rx_items[i].level0 == 0) && (rx_items[i].duration0 < OW_DURATION_SAMPLE))
+                        if ((rx_items[i].level0 == 0) && (rx_items[i].duration0 < info->timing.durationSample))
                         {
                             // rising edge occured before 15us -> bit 1
                             read_data |= 0x80;
@@ -353,7 +341,8 @@ static struct owb_driver rmt_function_table =
 };
 
 static owb_status _init(owb_rmt_driver_info *info, gpio_num_t gpio_num,
-                        rmt_channel_t tx_channel, rmt_channel_t rx_channel)
+                        rmt_channel_t tx_channel, rmt_channel_t rx_channel,
+                        owb_rmt_timing_t timing)
 {
     owb_status status = OWB_STATUS_HW_ERROR;
 
@@ -366,6 +355,7 @@ static owb_status _init(owb_rmt_driver_info *info, gpio_num_t gpio_num,
     info->tx_channel = tx_channel;
     info->rx_channel = rx_channel;
     info->gpio = gpio_num;
+    info->timing = timing;
 
 #ifdef OW_DEBUG
     ESP_LOGI(TAG, "RMT TX channel: %d", info->tx_channel);
@@ -395,7 +385,7 @@ static owb_status _init(owb_rmt_driver_info *info, gpio_num_t gpio_num,
             rmt_rx.rmt_mode = RMT_MODE_RX;
             rmt_rx.rx_config.filter_en = true;
             rmt_rx.rx_config.filter_ticks_thresh = 30;
-            rmt_rx.rx_config.idle_threshold = OW_DURATION_RX_IDLE;
+            rmt_rx.rx_config.idle_threshold = info->timing.durationRXIdle;
             if (rmt_config(&rmt_rx) == ESP_OK)
             {
                 rmt_set_source_clk(info->rx_channel, RMT_BASECLK_APB);  // only APB is supported by IDF 4.2
@@ -452,12 +442,13 @@ static owb_status _init(owb_rmt_driver_info *info, gpio_num_t gpio_num,
 }
 
 OneWireBus * owb_rmt_initialize(owb_rmt_driver_info * info, gpio_num_t gpio_num,
-                                rmt_channel_t tx_channel, rmt_channel_t rx_channel)
+                                rmt_channel_t tx_channel, rmt_channel_t rx_channel,
+                                owb_rmt_timing_t timing)
 {
     ESP_LOGD(TAG, "%s: gpio_num: %d, tx_channel: %d, rx_channel: %d",
              __func__, gpio_num, tx_channel, rx_channel);
 
-    owb_status status = _init(info, gpio_num, tx_channel, rx_channel);
+    owb_status status = _init(info, gpio_num, tx_channel, rx_channel, timing);
     if (status != OWB_STATUS_OK)
     {
         ESP_LOGE(TAG, "_init() failed with status %d", status);

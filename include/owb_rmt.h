@@ -44,6 +44,44 @@
 extern "C" {
 #endif
 
+
+
+
+#define OWB_RMT_TIMING_STANDARD {   \
+        .durationReset = 480,       \
+        .durationW1Low = 6,         \
+        .durationW1High = 64,       \
+        .durationW0Low = 60,        \
+        .durationW0High = 10,       \
+        .durationSample = 15-2,     \
+        .durationRXIdle = 72        \
+    }
+
+#define OWB_RMT_TIMING_OVERDRIVE {  \
+        .durationReset = 70,        \
+        .durationW1Low = 1,         \
+        .durationW1High = 8,        \
+        .durationW0Low = 8,         \
+        .durationW0High = 3,        \
+        .durationSample = 3,        \
+        .durationRXIdle = 13        \
+    }
+
+typedef struct
+{
+    uint32_t durationReset; // Duration of RESET low pulse
+
+    uint32_t durationW1Low; // Duration of W1 low pulse
+    uint32_t durationW1High; // Duration of W1 high pulse
+
+    uint32_t durationW0Low; // Duration of W0 low pulse
+    uint32_t durationW0High; // Duration of W0 high pulse
+
+    uint32_t durationSample; // TODO: What?
+
+    uint32_t durationRXIdle; // Must be larger than any duration occurring during write slots
+} owb_rmt_timing_t;
+
 /**
  * @brief RMT driver information
  */
@@ -54,6 +92,7 @@ typedef struct
   RingbufHandle_t rb; ///< Ring buffer handle
   int gpio;           ///< OneWireBus GPIO
   OneWireBus bus;     ///< OneWireBus instance
+  owb_rmt_timing_t timing;
 } owb_rmt_driver_info;
 
 /**
@@ -66,7 +105,8 @@ typedef struct
  * @return OneWireBus *, pass this into the other OneWireBus public API functions
  */
 OneWireBus* owb_rmt_initialize(owb_rmt_driver_info * info, gpio_num_t gpio_num,
-                               rmt_channel_t tx_channel, rmt_channel_t rx_channel);
+                               rmt_channel_t tx_channel, rmt_channel_t rx_channel,
+                               owb_rmt_timing_t timing);
 
 #ifdef __cplusplus
 }
